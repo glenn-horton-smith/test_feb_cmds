@@ -45,7 +45,8 @@ class SockExpect:
         self.s = s
         self.eol = eol
         self.before = bytearray()
-        self.after = bytearray()
+        self.match = None
+        self.data = bytearray()
         self.maxchunksize = DEFAULT_CHUNKSIZE
         self.maxbuffsize = DEFAULT_MAXBUFFSIZE
         if self.s.gettimeout() is None:
@@ -63,38 +64,54 @@ class SockExpect:
     def expect(self, regexp: typing.Union[bytes, re.Pattern]):
         """Receive and save data from socket until the given regexp
         is matched, a timeout occurs, or the socket is closed.
+        
+        Keeps bytes read before the match, the match itself, and 
+        all bytes read in `before`, `match`,
+        and `data`, respectively.
+        
         Data is read in chunks of size up to self.maxchunksize
         before being checked for a regexp match, so the buffer may
         contain data send by the server after the regexp match.
+        
         Raises an exception on timeout error or socket close.
+        
         On success, self.before will be equal to data received up
-        to the start of the matched expression, and self.after
-        will be equal to the matched expression and any data received
-        afterwards. The of self.after is retained between calls, and
-        matching is applied to data previously received.
-        On failure, self.after will be equal to all
-        data received appended to the value of self.after on entry.
-        Both self.after and self.before are bytearray objects.
+        to the start of the matched expression, self.match will contain
+        the results of the match, and self.data will be equal to 
+        any data received.
+        
+        The value of self.data is retained between calls, and
+        matching is applied to data previously received after discarding
+        data up to the end of the last match.
+        The value of self.before is reset during each call.
+        
+        On failure, self.data will be equal to all
+        data received appended to the value of self.data on entry.
+        
+        Both self.data and self.before are bytearray objects.
+        self.match is a re.Match object.
         """
         if isinstance(regexp, bytes):
             regexp = re.compile(regexp)
+        if self.match is not None:
+            del self.data[:self.match.end()]
         while True:
-            alen0 = len(self.after)
+            alen0 = len(self.data)
             if alen0 > 0:
-                m = regexp.search(self.after)
+                m = regexp.search(self.data)
                 if m is not None:
                     break
             if alen0 > self.maxbuffsize - self.maxchunksize:
-                del self.after[:self.maxchunksize]
+                del self.data[:self.maxchunksize]
                 alen0 = len(self.maxchunksize)
             try:
-                self.after += self.s.recv(self.maxchunksize)
+                self.data += self.s.recv(self.maxchunksize)
             except socket.timeout:
                 raise Exception(f"sockexpect.expect: timed out waiting"
-                                f" for {regexp}, received {self.after}")
-            if len(self.after) == alen0:
+                                f" for {regexp}, received {self.data}")
+            if len(self.data) == alen0:
                 raise Exception(f"sockexpect.expect: did not find "
-                                f"{regexp} in response {self.after}")
+                                f"{regexp} in response {self.data}")
         istart = m.start()
-        self.before = self.after[:istart]
-        del self.after[:istart]
+        self.before = self.data[:istart]
+        self.match = m
